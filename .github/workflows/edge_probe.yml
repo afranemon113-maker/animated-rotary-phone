@@ -10,6 +10,14 @@ on:
         description: 'Dynamic Metrics Controller'
         required: false
         default: 'https://one.neonxcloud.top'
+      max_nodes:
+        description: 'Max Nodes to Probe'
+        required: false
+        default: '20'
+      batch_size:
+        description: 'Batch Limit per Iteration'
+        required: false
+        default: '20'
 
 jobs:
   network-benchmark:
@@ -32,5 +40,7 @@ jobs:
         env:
           METRICS_HOST: ${{ github.event.inputs.metrics_host || vars.METRICS_HOST || secrets.PROBE_HOST || 'https://one.neonxcloud.top' }}
           PROBE_TOKEN: ${{ secrets.PROBE_TOKEN || 'mhb_live_f1286e646e6f56c023bfd4b5d22b018384a07ba8' }}
+          MAX_NODES: ${{ github.event.inputs.max_nodes || '20' }}
+          BATCH_SIZE: ${{ github.event.inputs.batch_size || '20' }}
         run: |
           python benchmark.py
