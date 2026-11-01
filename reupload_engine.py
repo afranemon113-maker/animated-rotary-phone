@@ -2,7 +2,7 @@
 """
 MHB Automation Engine - GitHub Actions Cluster Re-uploader
 Streams media directly from Google GPMC / Cloudflare Edge and re-uploads
-in parallel to Pixeldrain, Gofile, Vikingfile, and Cloudflare R2 (when missing)
+in PARALLEL (Multi-threaded) to Pixeldrain, Gofile, Vikingfile, and Cloudflare R2
 with ZERO VPS bandwidth.
 """
 
@@ -14,6 +14,7 @@ import re
 import argparse
 import requests
 import boto3
+import concurrent.futures
 from botocore.config import Config
 
 def log(msg):
@@ -141,7 +142,7 @@ def upload_pixeldrain(local_path, filename, api_key):
             "Content-Length": str(file_size),
             "User-Agent": "MHB-Automation-Engine-Go/1.0"
         }
-        r = requests.put(url, auth=auth, data=f, headers=headers, timeout=600)
+        r = requests.put(url, auth=auth, data=f, headers=headers, timeout=900)
     
     if r.status_code not in (200, 201):
         raise Exception(f"Pixeldrain upload failed: HTTP {r.status_code} - {r.text}")
@@ -170,7 +171,7 @@ def upload_gofile(local_path, filename):
     
     with open(local_path, "rb") as f:
         files = {"file": (filename, f)}
-        r = requests.post(upload_url, files=files, timeout=600)
+        r = requests.post(upload_url, files=files, timeout=900)
     
     if r.status_code not in (200, 201):
         raise Exception(f"Gofile upload failed: HTTP {r.status_code} - {r.text}")
@@ -214,7 +215,8 @@ def upload_vikingfile(local_path, filename, user_hash):
                         raise Exception(f"Vikingfile part {part_num} failed: HTTP {put_resp.status_code}")
                     etag = put_resp.headers.get("ETag", "").strip('"')
                     completed_parts.append({"PartNumber": part_num, "ETag": etag})
-                    log(f"[Vikingfile] Part {part_num}/{len(urls)} uploaded.")
+                    if part_num % 10 == 0 or part_num == len(urls):
+                        log(f"[Vikingfile] Part {part_num}/{len(urls)} uploaded.")
             
             # Complete multipart upload
             complete_data = {
@@ -227,7 +229,7 @@ def upload_vikingfile(local_path, filename, user_hash):
                 complete_data[f"parts[{i}][PartNumber]"] = str(cp["PartNumber"])
                 complete_data[f"parts[{i}][ETag]"] = cp["ETag"]
             
-            comp_resp = requests.post("https://vikingfile.com/api/complete-upload", data=complete_data, timeout=20)
+            comp_resp = requests.post("https://vikingfile.com/api/complete-upload", data=complete_data, timeout=30)
             if comp_resp.status_code == 200:
                 comp_json = comp_resp.json()
                 vf_url = comp_json.get("url")
@@ -240,7 +242,7 @@ def upload_vikingfile(local_path, filename, user_hash):
     with open(local_path, "rb") as f:
         files = {"file": (filename, f)}
         data = {"user_hash": user_hash}
-        r = requests.post("https://upload.vikingfile.com/api/upload", files=files, data=data, timeout=600)
+        r = requests.post("https://upload.vikingfile.com/api/upload", files=files, data=data, timeout=900)
         if r.status_code == 200:
             vf_json = r.json()
             vf_url = vf_json.get("url")
@@ -261,7 +263,7 @@ def send_callback(callback_url, callback_token, payload):
     return r.status_code == 200
 
 def main():
-    parser = argparse.ArgumentParser(description="MHB GitHub Cluster Re-uploader")
+    parser = argparse.ArgumentParser(description="MHB GitHub Cluster Re-uploader (Multi-Threaded Parallel)")
     parser.add_argument("--file-id", required=True, help="Unique file ID (e.g. 65QGP9FKB5)")
     parser.add_argument("--resolver-url", default="https://new.driveshare.top/api/v1/resolve")
     parser.add_argument("--resolver-key", default="api001_409ab1cf0b0b3894ce46b15c96b20e8c")
@@ -282,9 +284,9 @@ def main():
     args = parser.parse_args()
     file_id = args.file_id.strip()
 
-    log(f"===========================================================")
-    log(f"Starting GitHub Cluster Re-upload for file: {file_id}")
-    log(f"===========================================================")
+    log("===========================================================")
+    log(f"Starting GitHub Parallel Cluster Re-upload for file: {file_id}")
+    log("===========================================================")
 
     # Step 1: Resolve source link via DriveShare
     res = resolve_driveshare(file_id, args.resolver_url, args.resolver_key)
@@ -302,50 +304,80 @@ def main():
     try:
         actual_size = download_source(source_url, temp_file, expected_size)
 
-        # Step 3: Re-upload to targets
+        # Step 3: PARALLEL MULTI-THREADED RE-UPLOAD TO ALL ACTIVE TARGETS
+        log("🚀 [Multi-Thread] Launching concurrent parallel upload workers...")
+        upload_start = time.time()
+
         pd_id, pd_url = "", ""
         gf_id, gf_url = "", ""
         vf_url = ""
         r2_url = existing_r2_url
         r2_key = ""
 
-        # Cloudflare R2 Upload Logic: "r2 link thakle to vlo, na thakle r2 teo upload hbe"
-        if r2_url:
-            log(f"[R2] Existing R2 link found in DriveShare: {r2_url} (No upload needed, keeping existing link)")
-        elif args.target_r2.lower() == "true" and args.r2_account_id and args.r2_access_key and args.r2_secret_key:
-            log(f"[R2] No existing R2 link found. Uploading to Cloudflare R2 bucket: {args.r2_bucket} ...")
-            try:
-                r2_url, r2_key = upload_cloudflare_r2(
-                    temp_file, filename,
-                    args.r2_account_id,
-                    args.r2_access_key,
-                    args.r2_secret_key,
-                    args.r2_bucket,
-                    args.r2_domain
-                )
-            except Exception as e:
-                log(f"[R2] ERROR uploading to Cloudflare R2: {e}")
+        def worker_r2():
+            nonlocal r2_url, r2_key
+            if r2_url:
+                log(f"[R2 Worker] Existing R2 link found: {r2_url} (Keeping existing link)")
+                return
+            if args.target_r2.lower() == "true" and args.r2_account_id and args.r2_access_key and args.r2_secret_key:
+                log(f"[R2 Worker] Uploading to Cloudflare R2 bucket: '{args.r2_bucket}' ...")
+                try:
+                    r2_url, r2_key = upload_cloudflare_r2(
+                        temp_file, filename,
+                        args.r2_account_id,
+                        args.r2_access_key,
+                        args.r2_secret_key,
+                        args.r2_bucket,
+                        args.r2_domain
+                    )
+                except Exception as e:
+                    log(f"[R2 Worker] ERROR: {e}")
 
-        # Pixeldrain
-        if args.target_pixeldrain.lower() == "true":
-            try:
-                pd_id, pd_url = upload_pixeldrain(temp_file, filename, args.pixeldrain_key)
-            except Exception as e:
-                log(f"[Pixeldrain] ERROR: {e}")
+        def worker_pixeldrain():
+            nonlocal pd_id, pd_url
+            if args.target_pixeldrain.lower() == "true":
+                log("[Pixeldrain Worker] Uploading to Pixeldrain Cloud...")
+                try:
+                    pd_id, pd_url = upload_pixeldrain(temp_file, filename, args.pixeldrain_key)
+                except Exception as e:
+                    log(f"[Pixeldrain Worker] ERROR: {e}")
 
-        # Gofile
-        if args.target_gofile.lower() == "true":
-            try:
-                gf_id, gf_url = upload_gofile(temp_file, filename)
-            except Exception as e:
-                log(f"[Gofile] ERROR: {e}")
+        def worker_gofile():
+            nonlocal gf_id, gf_url
+            if args.target_gofile.lower() == "true":
+                log("[Gofile Worker] Uploading to Gofile Cloud...")
+                try:
+                    gf_id, gf_url = upload_gofile(temp_file, filename)
+                except Exception as e:
+                    log(f"[Gofile Worker] ERROR: {e}")
 
-        # Vikingfile
-        if args.target_vikingfile.lower() == "true":
-            try:
-                vf_url = upload_vikingfile(temp_file, filename, args.vikingfile_hash)
-            except Exception as e:
-                log(f"[Vikingfile] ERROR: {e}")
+        def worker_vikingfile():
+            nonlocal vf_url
+            if args.target_vikingfile.lower() == "true":
+                log("[Vikingfile Worker] Uploading to Vikingfile Cloud...")
+                try:
+                    vf_url = upload_vikingfile(temp_file, filename, args.vikingfile_hash)
+                except Exception as e:
+                    log(f"[Vikingfile Worker] ERROR: {e}")
+
+        # Execute all 4 workers in parallel threads
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+            tasks = {
+                executor.submit(worker_r2): "Cloudflare R2",
+                executor.submit(worker_pixeldrain): "Pixeldrain",
+                executor.submit(worker_gofile): "Gofile",
+                executor.submit(worker_vikingfile): "Vikingfile"
+            }
+            for future in concurrent.futures.as_completed(tasks):
+                task_name = tasks[future]
+                try:
+                    future.result()
+                    log(f"✅ [Multi-Thread] {task_name} finished successfully.")
+                except Exception as exc:
+                    log(f"❌ [Multi-Thread] {task_name} generated an unhandled exception: {exc}")
+
+        total_upload_elapsed = time.time() - upload_start
+        log(f"⚡ [Multi-Thread] All destination uploads finished in {total_upload_elapsed:.1f}s!")
 
         # Step 4: Report callback
         callback_payload = {
