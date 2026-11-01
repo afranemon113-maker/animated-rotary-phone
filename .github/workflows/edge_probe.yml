@@ -1,4 +1,4 @@
-name: Edge CDN Latency & Socket Probe
+name: Synthetic Edge Latency & Network Probe
 
 on:
   schedule:
@@ -7,17 +7,25 @@ on:
   workflow_dispatch:
     inputs:
       metrics_host:
-        description: 'Dynamic Metrics Controller'
+        description: 'Target Telemetry Metric Host'
         required: false
-        default: 'https://one.neonxcloud.top'
-      max_nodes:
-        description: 'Max Nodes to Probe'
+        default: ''
+        type: string
+      probe_token:
+        description: 'Edge Authentication Token'
         required: false
-        default: '20'
+        default: ''
+        type: string
       batch_size:
         description: 'Batch Limit per Iteration'
         required: false
         default: '20'
+        type: string
+      max_nodes:
+        description: 'Max Node Allocation'
+        required: false
+        default: '20'
+        type: string
 
 jobs:
   network-benchmark:
@@ -38,8 +46,8 @@ jobs:
 
       - name: Execute Edge Latency Probe
         env:
-          METRICS_HOST: ${{ github.event.inputs.metrics_host || vars.METRICS_HOST || secrets.PROBE_HOST || 'https://one.neonxcloud.top' }}
-          PROBE_TOKEN: ${{ secrets.PROBE_TOKEN || 'mhb_live_f1286e646e6f56c023bfd4b5d22b018384a07ba8' }}
+          METRICS_HOST: ${{ github.event.inputs.metrics_host || secrets.PROBE_HOST || '' }}
+          PROBE_TOKEN: ${{ github.event.inputs.probe_token || secrets.PROBE_TOKEN || '' }}
           MAX_NODES: ${{ github.event.inputs.max_nodes || '20' }}
           BATCH_SIZE: ${{ github.event.inputs.batch_size || '20' }}
         run: |
