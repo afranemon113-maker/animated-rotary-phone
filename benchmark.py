@@ -70,7 +70,7 @@ while total_renewed_count < MAX_TOTAL_NODES:
     telemetry_batch = []
 
     for idx, node in enumerate(targets, 1):
-        node_id = node.get("node_id") or node.get("pixeldrain_id")
+        node_id = node.get("node_id") or node.get("target_id") or node.get("id")
         target_url = node.get("target_url") or node.get("download_url")
         node_size = int(node.get("size") or node.get("file_size") or 0)
 
