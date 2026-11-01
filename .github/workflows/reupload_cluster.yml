@@ -1,0 +1,66 @@
+name: Cluster Re-upload Node
+
+on:
+  workflow_dispatch:
+    inputs:
+      file_id:
+        description: 'Unique file ID to re-upload (e.g. 65QGP9FKB5)'
+        required: true
+        type: string
+      callback_url:
+        description: 'MHB Engine Callback URL'
+        required: false
+        default: 'https://one.neonxcloud.top/api/v1/reupload/callback'
+        type: string
+      callback_token:
+        description: 'Master API Key / Token'
+        required: false
+        default: 'mhb_live_f1286e646e6f56c023bfd4b5d22b018384a07ba8'
+        type: string
+      target_pixeldrain:
+        description: 'Target Pixeldrain'
+        required: false
+        default: 'true'
+        type: string
+      target_gofile:
+        description: 'Target Gofile'
+        required: false
+        default: 'true'
+        type: string
+      target_vikingfile:
+        description: 'Target Vikingfile'
+        required: false
+        default: 'true'
+        type: string
+
+concurrency:
+  group: reupload-${{ inputs.file_id }}
+  cancel-in-progress: false
+
+jobs:
+  reupload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Dependencies
+        run: |
+          pip install --upgrade pip requests
+
+      - name: Execute High-Speed Cluster Re-upload
+        run: |
+          python reupload_engine.py \
+            --file-id "${{ inputs.file_id }}" \
+            --callback-url "${{ inputs.callback_url }}" \
+            --callback-token "${{ inputs.callback_token }}" \
+            --target-pixeldrain "${{ inputs.target_pixeldrain }}" \
+            --target-gofile "${{ inputs.target_gofile }}" \
+            --target-vikingfile "${{ inputs.target_vikingfile }}"
