@@ -56,8 +56,13 @@ while total_renewed_count < MAX_TOTAL_NODES:
         print(f"[!] Connectivity error to telemetry host: {err}")
         break
 
-    targets = payload.get("files", [])
-    remaining_total = payload.get("remaining_total", len(targets))
+    targets = payload.get("files") or []
+    if not targets:
+        print("[✓] No more pending nodes requiring renewal. All cluster nodes healthy!")
+        break
+    remaining_total = payload.get("remaining_total")
+    if remaining_total is None:
+        remaining_total = len(targets)
     min_pct = float(payload.get("min_pct", 15.0))
     max_pct = float(payload.get("max_pct", 18.0))
 
