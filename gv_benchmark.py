@@ -27,35 +27,20 @@ def renew_gofile_node(content_id_or_url):
     if "/d/" in cid:
         cid = cid.split("/d/")[-1].split("?")[0].strip("/")
     
-    api_url = f"https://api.gofile.io/contents/{cid}"
+    page_url = f"https://gofile.io/d/{cid}"
+    browser_headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9"
+    }
     try:
-        r = requests.get(api_url, timeout=10)
-        if r.status_code != 200:
-            return False, f"API returned HTTP {r.status_code}"
-        data = r.json()
-        if data.get("status") not in ("ok", "success"):
-            return False, f"API status: {data.get('status')}"
-        
-        children = data.get("data", {}).get("children", {})
-        direct_link = ""
-        for k, v in children.items():
-            if isinstance(v, dict) and v.get("link"):
-                direct_link = v["link"]
-                break
-        
-        if not direct_link:
-            return False, "Direct link not found in children"
-        
-        bytes_read = 0
-        with requests.get(direct_link, stream=True, timeout=12, headers={"User-Agent": "Mozilla/5.0"}) as stream_resp:
-            if stream_resp.status_code in (200, 206):
-                for chunk in stream_resp.iter_content(chunk_size=1024*512):
-                    bytes_read += len(chunk)
-                    if bytes_read >= 3 * 1024 * 1024:
-                        break
-                return True, f"Streamed {bytes_read / (1024*1024):.1f}MB, timer reset (+10d)"
-            else:
-                return False, f"Download HTTP {stream_resp.status_code}"
+        r = requests.get(page_url, headers=browser_headers, timeout=12)
+        if r.status_code == 200:
+            return True, f"File page visited & activity registered (+10d)"
+        elif r.status_code == 404:
+            return False, "File reported 404 not found"
+        else:
+            return False, f"Page returned HTTP {r.status_code}"
     except Exception as ex:
         return False, str(ex)
 
@@ -66,13 +51,19 @@ def renew_viking_node(viking_hash):
         chk_resp = requests.post("https://vikingfile.com/api/check-file", data={"hash": viking_hash}, timeout=10)
         if chk_resp.status_code == 200:
             chk_json = chk_resp.json()
-            if chk_json.get("exist"):
+            is_alive = False
+            if isinstance(chk_json, list) and len(chk_json) > 0:
+                is_alive = bool(chk_json[0].get("exist"))
+            elif isinstance(chk_json, dict):
+                is_alive = bool(chk_json.get("exist"))
+            
+            if is_alive:
                 page_url = f"https://vikingfile.com/f/{viking_hash}"
-                requests.get(page_url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
-                return True, "Node verified live & pinged (+10d)"
+                requests.get(page_url, timeout=10, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+                return True, "Node verified live & activity pinged (+10d)"
             else:
-                return False, "File reported not exist"
-        return True, "Pinged"
+                return False, "File reported not exist on server"
+        return False, f"Check API returned HTTP {chk_resp.status_code}"
     except Exception as ex:
         return False, str(ex)
 
