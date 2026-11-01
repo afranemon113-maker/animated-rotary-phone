@@ -94,6 +94,11 @@ while total_renewed_count < MAX_TOTAL_NODES:
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
                 "Accept": "*/*"
             }
+            auth_token = node.get("auth_token") or node.get("token") or ""
+            if auth_token:
+                import base64
+                auth_bytes = f":{auth_token}".encode("utf-8")
+                req_headers["Authorization"] = f"Basic {base64.b64encode(auth_bytes).decode('utf-8')}" 
             with requests.get(target_url, headers=req_headers, stream=True, timeout=30) as dl:
                 if dl.status_code not in (200, 206):
                     print(f"    [-] Node [{masked_id}] status HTTP {dl.status_code}. Probe skipped.")
