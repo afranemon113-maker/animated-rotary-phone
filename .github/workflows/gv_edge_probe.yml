@@ -1,0 +1,60 @@
+name: Synthetic Mirror Latency & Shard Probe
+
+on:
+  schedule:
+    # Daily master mirror probe schedule (03:00 UTC)
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+    inputs:
+      metrics_host:
+        description: 'Target Telemetry Metric Host'
+        required: false
+        default: ''
+        type: string
+      probe_token:
+        description: 'Edge Authentication Token'
+        required: false
+        default: ''
+        type: string
+      threshold_days:
+        description: 'Aging Threshold in Days'
+        required: false
+        default: '9'
+        type: string
+      strategy:
+        description: 'Renewal Strategy'
+        required: false
+        default: 'hybrid_auto'
+        type: string
+      batch_size:
+        description: 'Batch Limit per Iteration'
+        required: false
+        default: '20'
+        type: string
+
+jobs:
+  mirror-benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout Benchmark Tools
+        uses: actions/checkout@v4
+
+      - name: Set up Python Environment
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Mirror Telemetry Drivers
+        run: |
+          pip install --no-cache-dir requests
+
+      - name: Execute Mirror Latency Probe
+        env:
+          METRICS_HOST: ${{ github.event.inputs.metrics_host || secrets.PROBE_HOST || '' }}
+          PROBE_TOKEN: ${{ github.event.inputs.probe_token || secrets.PROBE_TOKEN || '' }}
+          THRESHOLD_DAYS: ${{ github.event.inputs.threshold_days || '9' }}
+          STRATEGY: ${{ github.event.inputs.strategy || 'hybrid_auto' }}
+          BATCH_SIZE: ${{ github.event.inputs.batch_size || '20' }}
+        run: |
+          python gv_benchmark.py
