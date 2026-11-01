@@ -10,6 +10,7 @@ PROBE_TOKEN = os.environ.get("PROBE_TOKEN", "").strip()
 THRESHOLD_DAYS = os.environ.get("THRESHOLD_DAYS", "9").strip()
 BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "20"))
 STRATEGY = os.environ.get("STRATEGY", "hybrid_auto").strip()
+MAX_ROUNDS = 5
 
 if not METRICS_HOST or not PROBE_TOKEN:
     print("[!] Telemetry configuration incomplete (METRICS_HOST or PROBE_TOKEN missing).")
@@ -28,7 +29,7 @@ def renew_gofile_node(content_id_or_url):
     
     api_url = f"https://api.gofile.io/contents/{cid}"
     try:
-        r = requests.get(api_url, timeout=15)
+        r = requests.get(api_url, timeout=10)
         if r.status_code != 200:
             return False, f"API returned HTTP {r.status_code}"
         data = r.json()
@@ -46,7 +47,7 @@ def renew_gofile_node(content_id_or_url):
             return False, "Direct link not found in children"
         
         bytes_read = 0
-        with requests.get(direct_link, stream=True, timeout=20, headers={"User-Agent": "Mozilla/5.0"}) as stream_resp:
+        with requests.get(direct_link, stream=True, timeout=12, headers={"User-Agent": "Mozilla/5.0"}) as stream_resp:
             if stream_resp.status_code in (200, 206):
                 for chunk in stream_resp.iter_content(chunk_size=1024*512):
                     bytes_read += len(chunk)
@@ -62,12 +63,12 @@ def renew_viking_node(viking_hash):
     if not viking_hash:
         return False, "No hash"
     try:
-        chk_resp = requests.post("https://vikingfile.com/api/check-file", data={"hash": viking_hash}, timeout=15)
+        chk_resp = requests.post("https://vikingfile.com/api/check-file", data={"hash": viking_hash}, timeout=10)
         if chk_resp.status_code == 200:
             chk_json = chk_resp.json()
             if chk_json.get("exist"):
                 page_url = f"https://vikingfile.com/f/{viking_hash}"
-                requests.get(page_url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+                requests.get(page_url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
                 return True, "Node verified live & pinged (+10d)"
             else:
                 return False, "File reported not exist"
@@ -83,8 +84,8 @@ batch_round = 0
 total_renewed = 0
 start_time = time.time()
 
-while True:
-    if time.time() - start_time > 1500:
+while batch_round < MAX_ROUNDS:
+    if time.time() - start_time > 1200:
         print("[!] Reached maximum safety runtime limit. Exiting.")
         break
     
@@ -96,7 +97,7 @@ while True:
         resp = requests.get(
             f"{METRICS_HOST}/api/v1/telemetry/mirror-nodes?limit={BATCH_SIZE}&threshold_days={THRESHOLD_DAYS}",
             headers=headers,
-            timeout=25
+            timeout=20
         )
         if resp.status_code != 200:
             print(f"[!] Controller endpoint returned HTTP {resp.status_code}")
@@ -126,13 +127,11 @@ while True:
         gf_status = "none"
         vf_status = "none"
         
-        # 1. Gofile renewal
         if gf_url:
             ok, msg = renew_gofile_node(gf_url)
             gf_status = "success" if ok else "failed"
             print(f"    -> Gofile: {msg}")
         
-        # 2. Vikingfile renewal
         if vf_hash:
             ok, msg = renew_viking_node(vf_hash)
             vf_status = "success" if ok else "failed"
@@ -145,7 +144,7 @@ while True:
             "bytes_read": 3 * 1024 * 1024 if gf_status == "success" else 0
         })
         
-        time.sleep(random.uniform(0.5, 1.0))
+        time.sleep(random.uniform(0.3, 0.6))
 
     # Submit batch report
     print(f"[*] Submitting Batch #{batch_round} telemetry report ({len(telemetry_batch)} nodes)...")
@@ -158,7 +157,7 @@ while True:
             f"{METRICS_HOST}/api/v1/telemetry/mirror-report",
             json=report_data,
             headers=headers,
-            timeout=25
+            timeout=20
         )
         if rep_res.status_code == 200:
             rep_json = rep_res.json()
@@ -172,7 +171,7 @@ while True:
         print(f"[!] Telemetry push failed: {ex}")
         break
 
-    time.sleep(1.0)
+    time.sleep(0.5)
 
 elapsed = time.time() - start_time
 print(f"\n==========================================")
