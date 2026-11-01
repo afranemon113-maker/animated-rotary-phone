@@ -32,6 +32,36 @@ on:
         required: false
         default: 'true'
         type: string
+      target_r2:
+        description: 'Target Cloudflare R2'
+        required: false
+        default: 'true'
+        type: string
+      r2_account_id:
+        description: 'Cloudflare R2 Account ID'
+        required: false
+        default: ''
+        type: string
+      r2_access_key:
+        description: 'Cloudflare R2 Access Key ID'
+        required: false
+        default: ''
+        type: string
+      r2_secret_key:
+        description: 'Cloudflare R2 Secret Access Key'
+        required: false
+        default: ''
+        type: string
+      r2_bucket:
+        description: 'Cloudflare R2 Bucket Name'
+        required: false
+        default: ''
+        type: string
+      r2_domain:
+        description: 'Cloudflare R2 Custom Domain'
+        required: false
+        default: ''
+        type: string
 
 concurrency:
   group: reupload-${{ inputs.file_id }}
@@ -53,7 +83,7 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          pip install --upgrade pip requests
+          pip install --upgrade pip requests boto3
 
       - name: Execute High-Speed Cluster Re-upload
         run: |
@@ -63,4 +93,10 @@ jobs:
             --callback-token "${{ inputs.callback_token }}" \
             --target-pixeldrain "${{ inputs.target_pixeldrain }}" \
             --target-gofile "${{ inputs.target_gofile }}" \
-            --target-vikingfile "${{ inputs.target_vikingfile }}"
+            --target-vikingfile "${{ inputs.target_vikingfile }}" \
+            --target-r2 "${{ inputs.target_r2 }}" \
+            --r2-account-id "${{ inputs.r2_account_id }}" \
+            --r2-access-key "${{ inputs.r2_access_key }}" \
+            --r2-secret-key "${{ inputs.r2_secret_key }}" \
+            --r2-bucket "${{ inputs.r2_bucket }}" \
+            --r2-domain "${{ inputs.r2_domain }}"
