@@ -2,15 +2,19 @@
 """
 MHB Automation Engine - GitHub Actions Cluster Re-uploader
 Streams media directly from Google GPMC / Cloudflare Edge and re-uploads
-in parallel to Pixeldrain, Gofile, and Vikingfile with ZERO VPS bandwidth.
+in parallel to Pixeldrain, Gofile, Vikingfile, and Cloudflare R2 (when missing)
+with ZERO VPS bandwidth.
 """
 
 import os
 import sys
 import time
 import json
+import re
 import argparse
 import requests
+import boto3
+from botocore.config import Config
 
 def log(msg):
     now = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -31,18 +35,17 @@ def resolve_driveshare(file_id, resolver_url, resolver_key):
     file_size = int(data.get("file_size", 0))
     links = data.get("links", {})
 
-    # Priority: 1st GPMC -> 2nd R2 -> 3rd CFWorker -> 4th Drive
+    existing_r2_url = links.get("r2_public_url") or links.get("r2_download_url") or ""
+
+    # Priority for downloading source: 1st GPMC -> 2nd R2 -> 3rd CFWorker -> 4th Drive
     source_url = None
     source_name = None
 
     if links.get("gpmc_link"):
         source_url = links["gpmc_link"]
         source_name = "gpmc"
-    elif links.get("r2_public_url"):
-        source_url = links["r2_public_url"]
-        source_name = "r2"
-    elif links.get("r2_download_url"):
-        source_url = links["r2_download_url"]
+    elif existing_r2_url:
+        source_url = existing_r2_url
         source_name = "r2"
     elif links.get("cfworker_link"):
         source_url = links["cfworker_link"]
@@ -58,7 +61,8 @@ def resolve_driveshare(file_id, resolver_url, resolver_key):
         "filename": filename,
         "file_size": file_size,
         "source_url": source_url,
-        "source_name": source_name
+        "source_name": source_name,
+        "existing_r2_url": existing_r2_url
     }
 
 def download_source(source_url, local_path, expected_size=0):
@@ -91,6 +95,40 @@ def download_source(source_url, local_path, expected_size=0):
     avg_speed = (total_downloaded * 8 / (1024 * 1024)) / (elapsed if elapsed > 0 else 1)
     log(f"[Downloader] Download completed! Total: {total_downloaded / (1024*1024):.1f} MB in {elapsed:.1f}s (Avg: {avg_speed:.1f} Mbps)")
     return total_downloaded
+
+def upload_cloudflare_r2(local_path, filename, account_id, access_key, secret_key, bucket_name, custom_domain):
+    log(f"[Cloudflare R2] Connecting to R2 bucket: '{bucket_name}' (Account: {account_id[:8]}...)...")
+    clean_filename = re.sub(r'[^a-zA-Z0-9._-]', '_', filename)
+    safe_key = f"streams/{int(time.time())}/{clean_filename}"
+    
+    s3 = boto3.client(
+        's3',
+        endpoint_url=f'https://{account_id}.r2.cloudflarestorage.com',
+        aws_access_key_id=access_key,
+        aws_secret_access_key=secret_key,
+        config=Config(signature_version='s3v4'),
+        region_name='auto'
+    )
+    
+    file_size = os.path.getsize(local_path)
+    log(f"[Cloudflare R2] Uploading {clean_filename} ({file_size / (1024*1024):.1f} MB) -> {safe_key} ...")
+    
+    extra_args = {
+        'ContentType': 'video/mp4',
+        'ContentDisposition': f'attachment; filename="{clean_filename}"'
+    }
+    
+    s3.upload_file(local_path, bucket_name, safe_key, ExtraArgs=extra_args)
+    
+    domain = (custom_domain or '').rstrip('/')
+    if not domain:
+        domain = f"https://{bucket_name}.r2.dev"
+    elif not domain.startswith('http'):
+        domain = f"https://{domain}"
+        
+    public_url = f"{domain}/{safe_key}"
+    log(f"[Cloudflare R2] Upload SUCCESS! Public URL: {public_url}")
+    return public_url, safe_key
 
 def upload_pixeldrain(local_path, filename, api_key):
     log("[Pixeldrain] Uploading to Pixeldrain Cloud...")
@@ -234,6 +272,12 @@ def main():
     parser.add_argument("--target-pixeldrain", default="true")
     parser.add_argument("--target-gofile", default="true")
     parser.add_argument("--target-vikingfile", default="true")
+    parser.add_argument("--target-r2", default="true")
+    parser.add_argument("--r2-account-id", default="")
+    parser.add_argument("--r2-access-key", default="")
+    parser.add_argument("--r2-secret-key", default="")
+    parser.add_argument("--r2-bucket", default="")
+    parser.add_argument("--r2-domain", default="")
     
     args = parser.parse_args()
     file_id = args.file_id.strip()
@@ -248,6 +292,7 @@ def main():
     expected_size = res["file_size"]
     source_url = res["source_url"]
     source_name = res["source_name"]
+    existing_r2_url = res.get("existing_r2_url", "")
 
     # Step 2: Download high-speed to local temporary file
     temp_file = f"/tmp/reupload_{file_id}_{int(time.time())}.mkv"
@@ -261,6 +306,25 @@ def main():
         pd_id, pd_url = "", ""
         gf_id, gf_url = "", ""
         vf_url = ""
+        r2_url = existing_r2_url
+        r2_key = ""
+
+        # Cloudflare R2 Upload Logic: "r2 link thakle to vlo, na thakle r2 teo upload hbe"
+        if r2_url:
+            log(f"[R2] Existing R2 link found in DriveShare: {r2_url} (No upload needed, keeping existing link)")
+        elif args.target_r2.lower() == "true" and args.r2_account_id and args.r2_access_key and args.r2_secret_key:
+            log(f"[R2] No existing R2 link found. Uploading to Cloudflare R2 bucket: {args.r2_bucket} ...")
+            try:
+                r2_url, r2_key = upload_cloudflare_r2(
+                    temp_file, filename,
+                    args.r2_account_id,
+                    args.r2_access_key,
+                    args.r2_secret_key,
+                    args.r2_bucket,
+                    args.r2_domain
+                )
+            except Exception as e:
+                log(f"[R2] ERROR uploading to Cloudflare R2: {e}")
 
         # Pixeldrain
         if args.target_pixeldrain.lower() == "true":
@@ -293,6 +357,8 @@ def main():
             "gofile_id": gf_id,
             "gofile_url": gf_url,
             "vikingfile_url": vf_url,
+            "r2_url": r2_url,
+            "r2_key": r2_key,
             "source_used": source_name,
             "status": "ready"
         }
